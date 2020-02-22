@@ -104,6 +104,9 @@ import time
 # Process Class -  models a process with an ID, total time it takes to execute the process, the type of process (normal,
 #                   I/O operation or an interrupt), and the process state (ready, running or blocked)
 #               - Contains various getter and setter methods to access and change process variables
+# ._cycles represents the TOTAL no. of clock cycles it took the process to complete, including time for all other
+# processes to be completed.
+
 class Process:
     def __init__(self, pID, executionTime, type="normal", state="ready"):
         self._pID = pID
@@ -111,6 +114,7 @@ class Process:
         self._type = type.lower()
         self._state = state.lower()
 
+        self._cycles = 0
     def __str__(self):
         return ("Process information:\n"
                "    Process ID: %s\n"
@@ -188,11 +192,53 @@ class Queue:
 #
 #                _addReadyProcess
 #                   Ready queue functionality. Adds a process to the end of the ready queue. process parameter allows for the
+#                   processes to be added outside the class.
+#
+#               _runProcess
+#                   Sends a process to the CPU if there are any processes in either queues. After a normal process is run
+#                   the scheduler checks and executes a blocked processes (if there are any).
+
+class Scheduler:
+    def __init__(self):
+        self._process = None
+        self._CPU = CPU()
+
+    def _addReadyProcess(self, process):
+        self._CPU._readyQueue._queueProcess(process)
+
+    def _runProcess(self):
+        if (self._CPU._readyQueue._size == 0) and (self._CPU._blockedQueue._size == 0):
+            self._CPU._runIdleProcess()
+
+        while self._CPU._readyQueue._size != 0:
+            self._process = self._CPU._readyQueue._getTopProcess()
+            print("Process %d currently running." % self._process._pID)
+            self._process._state = "running"
+            self._process._cycles += 1
+            self._CPU._runProcess(self._process)
+
+
+            # After normal process complete check on blocked processes (for fairness)
+            if self._process._type == "normal" and self._CPU._blockedQueue._size != 0:
+                process = self._CPU._blockedQueue._queue[self._CPU._blockedQueue._head]
+                self._CPU._removeBlockedProcess()
+                process._state = "ready"
+                print("Removing process %d from blocked queue." % process._pID)
+                self._CPU._addReadyProcess(process)
+                print("Adding process %d to ready queue." % process._pID)
+            # Run idle process in no other processes are queued.
+            if (self._CPU._readyQueue._size == 0) and (self._CPU._blockedQueue._size == 0):
+                self._CPU._runIdleProcess()
+
+
+# CPU Class - mimics process execution by stalling execution using the sleep function from the time module.
+#
+#                _addReadyProcess
+#                   Ready queue functionality. Adds a process to the end of the ready queue. process parameter allows for the
 #                   processes to be added outside the class. Otherwise this method is called within the class itself when
 #                   a process requires more CPU time to finish
 #                       OR
-#                   when a process is ready to execute after being in the
-#                   blocked queue.
+#                   when a process is ready to execute after being in the blocked queue.
 #
 #               _removeReadyProcess
 #                   Ready queue functionality. Removes the topmost process on the ready queue. Called when any kind of
@@ -211,19 +257,19 @@ class Queue:
 #                   process is ran.
 #
 #               _runProcess
-#                   Sends a process to the CPU. If both queues are empty run the idle process. While either queues are
-#                   not empty begin running processes. Firstly processes from ready queue are run - scheduler checks
-#                   what type of process is being run: I/O operations get sent to CPU and then to the blocked queue
-#                   (the process state marked as blocked) until I/O operation completed, after I/O completed this process.
+#                   If both queues are empty run the idle process. Checks what type of process is being run:
+#                   I/O operations get sent to CPU and then to the blocked queue (the process state marked as blocked)
+#                   until I/O operation completed, after I/O completed this process.
 #                   Likewise for an interrupt, process state is changed to blocked, sent to the blocked queue but resumes
 #                   the same process after interrupt handled. If a normal process is running it either executes and
 #                   terminates as no more CPU time is needed otherwise the process is sent to the end of the ready queue,
-#                   this repeats until process completion. After a normal process is run the scheduler checks and executes
-#                   blocked processes (if there are any).
-class Scheduler:
+#                   this repeats until process completion. The process clock cycle count increases for all other processes
+#                   when a process is ran.
+#
+class CPU:
     def __init__(self):
-        self._process = None
-        self._CPU = CPU()
+        self._CPUProcess = None
+        self._clockCycle = 100
         self._readyQueue = Queue()
         self._blockedQueue = Queue()
 
@@ -239,78 +285,61 @@ class Scheduler:
     def _removeBlockedProcess(self):
         self._blockedQueue._dequeueProcess()
 
-    def _runProcess(self):
-        if (self._readyQueue._size == 0) and (self._blockedQueue._size == 0):
-            self._CPU._runIdleProcess()
 
-        while self._readyQueue._size != 0:
-            self._process = self._readyQueue._getTopProcess()
-            print("Process %d currently running." % self._process._pID)
-            self._process._state = "running"
-
-            # CASE: I/O
-            if self._process._type == "io":
-                if self._process._exeTime <= 0:
-                    print("Process %d completed." % self._process._pID)
-                    self._removeReadyProcess()
-                else:
-                    self._process._exeTime -= self._CPU._clockCycle
-                    print("I/O Process. Sending to blocked queue until I/O operation completed.")
-                    self._CPU._runProcess()
-                    self._process._state = "blocked"
-                    self._readyQueue._dequeueProcess()
-                    self._addBlockProcess(self._process)
-            # CASE: INTERRUPT
-            elif self._process._type == "interrupt":
-                print("Interrupt. Sending to blocked queue until handled.")
-                self._process._exeTime -= self._CPU._clockCycle
-                self._process._state = "blocked"
-                self._addBlockProcess(self._process)
-                self._CPU._interruptHandler()
-                self._removeBlockedProcess()
-                print("Interrupt handled - resuming process.")
-                self._process._state = "running"
-                self._process._type = "normal"
-            # CASE: NORMAL
-            if self._process._type == "normal":
-                self._process._exeTime -= self._CPU._clockCycle
-                self._CPU._runProcess()
-                # CASE: IF PROCESS WILL BE COMPLETED IN CURRENT CYCLE
-                if self._process._exeTime <= 0:
-                    #process completed
-                    print("Process %d completed." % self._process._pID)
-                    self._removeReadyProcess()
-                # CASE: IF MORE CPU TIME NEEDED
-                else:
-                    #return to ready queue
-                    self._process._state = "ready"
-                    self._removeReadyProcess()
-                    self._addReadyProcess(self._process)
-                    print("Adding process %d to ready queue." % self._process._pID)
-            # After normal process complete check on blocked processes (for fairness)
-            if self._blockedQueue._size != 0:
-                process = self._blockedQueue._queue[self._blockedQueue._head]
-                self._removeBlockedProcess()
-                process._state = "ready"
-                print("Removing process %d from blocked queue." % process._pID)
-                self._addReadyProcess(process)
-                print("Adding process %d to ready queue." % process._pID)
-            # Run idle process in no other processes are queued.
-            if (self._readyQueue._size == 0) and (self._blockedQueue._size == 0):
-                self._CPU._runIdleProcess()
-
-
-# CPU Class - mimics process execution by stalling execution using the sleep function from the time module.
-#
-#                _addReadyProcess
-#                   Ready queue functionality. Adds a process to the end of the
-class CPU:
-    def __init__(self):
-        self._CPUProcess = None
-        self._clockCycle = 100
-
-    def _runProcess(self):
+    def _runProcess(self, process):
+        self._CPUProcess = process
         time.sleep(1)   # mimic CPU doing work
+
+        # CASE: I/O
+        if self._CPUProcess._type == "io":
+            if self._CPUProcess._exeTime <= 0:
+                print("Process %d completed in %d clock cycle(s)." % (self._CPUProcess._pID, self._CPUProcess._cycles))
+                self._removeReadyProcess()
+            else:
+                self._CPUProcess._exeTime -= self._clockCycle
+                print("I/O Process. Sending to blocked queue until I/O operation completed.")
+                self._CPUProcess._state = "blocked"
+                self._readyQueue._dequeueProcess()
+                self._addBlockProcess(self._CPUProcess)
+
+        # CASE: INTERRUPT
+        elif self._CPUProcess._type == "interrupt":
+            print("Interrupt. Sending to blocked queue until handled.")
+            self._CPUProcess._exeTime -= self._clockCycle
+            self._CPUProcess._state = "blocked"
+            self._addBlockProcess(self._CPUProcess)
+            self._interruptHandler()
+            self._removeBlockedProcess()
+            print("Interrupt handled - resuming process.")
+            self._CPUProcess._state = "running"
+            self._CPUProcess._type = "normal"
+        # CASE: NORMAL
+        if self._CPUProcess._type == "normal":
+            self._CPUProcess._exeTime -= self._clockCycle
+            # CASE: IF PROCESS WILL BE COMPLETED IN CURRENT CYCLE
+            if self._CPUProcess._exeTime <= 0:
+                #process completed
+                print("Process %d completed in %d clock cycle(s)." % (self._CPUProcess._pID, self._CPUProcess._cycles))
+                self._removeReadyProcess()
+            # CASE: IF MORE CPU TIME NEEDED
+            else:
+                #return to ready queue
+                self._CPUProcess._state = "ready"
+                self._removeReadyProcess()
+                self._addReadyProcess(self._CPUProcess)
+                print("Adding process %d to ready queue." % self._CPUProcess._pID)
+            for i in self._readyQueue._queue:
+                if i is None:
+                    continue
+                elif i._pID != self._CPUProcess._pID:
+                    i._cycles += 1
+            for i in self._blockedQueue._queue:
+                if i is None:
+                    continue
+                elif i._pID != self._CPUProcess._pID:
+                    i._cycles += 1
+            if (self._readyQueue._size == 0) and (self._blockedQueue._size == 0):
+                self._runIdleProcess()
 
     def _interruptHandler(self):
         time.sleep(3)   # mimic event handler
@@ -319,7 +348,7 @@ class CPU:
         while True:
             print("Idle Process - Energy Saving")     # mimic idle process
             time.sleep(5)
-            if (scheduler._readyQueue._size != 0) or (scheduler._blockedQueue._size != 0):
+            if (self._readyQueue._size != 0) or (self._blockedQueue._size != 0):
                 return False
 
 
@@ -330,20 +359,19 @@ if __name__ == "__main__":
     def test():
         ioCount = 0
         interruptCount = 0
-        exeTimeList = [100, 200, 300, 400]
+        exeTimeList = [100, 200, 300]
         typeList = ["normal", "io", "interrupt"]
-        for i in range(0, 15):
-            exeTime = random.randint(0, 3)
+        for i in range(0, 5):
+            exeTime = random.randint(0, 2)
             proType = random.randint(0, 2)
             if proType == 1:
                 ioCount += 1
             if proType == 2:
                 interruptCount += 1
-            if (ioCount + interruptCount) > 4:
+            if (ioCount + interruptCount) == 2:
                 proType = 0
             process = Process((120 + i), exeTimeList[exeTime], typeList[proType], "ready")
             scheduler._addReadyProcess(process)
-        print(scheduler._readyQueue)
 
     test()
     scheduler._runProcess()
